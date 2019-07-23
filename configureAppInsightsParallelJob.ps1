@@ -43,8 +43,8 @@ $ErrorActionPreference = "Stop"
 $resourceGroupName = $envResourceGroupName
 $webAppNames = (Get-AzWebApp -ResourceGroupName $resourceGroupName).Name
 $appinsightsResource = ($resourceGroupName.Replace("-", "")).ToLower()
-$MaximumWaitMinutes = 1
-$DelayBetweenCheckSeconds = 5
+$MaximumWaitMinutes = 10
+$DelayBetweenCheckSeconds = 10
 #endregion variables
 
 #-----------------------------------------------------------[Functions]------------------------------------------------------------
@@ -62,20 +62,16 @@ $appInsightsInstrumentationKey = (Get-AzApplicationInsights -Name $appinsightsRe
 $setWebAppConfig = {
     param (
         [string] $resourceGroupName,
-        [string] $webAppName 
+        [string] $webAppName, 
+        [string] $appInsightsInstrumentationKey
     )
     try {
-        #Get the web app object
-        $webApp = Get-AzwebApp -ResourceGroupName $resourceGroupName -Name $webAppName
-    
-        #Enable Application insight extention
+        #Local Vars
         $resourceName = "$webAppName"
         $resourceNameString = $resourceName + "/Microsoft.ApplicationInsights.AzureWebSites"
-        Write-host "Enabling Application Insights Extension on" $resourceName -ForegroundColor	DarkYellow
-        Write-host "'$resourceNameString'" #debug
-        Write-host "'$resourceGroupName'" #debug
-        New-AzResource -ResourceType "Microsoft.Web/sites/siteextensions" -ResourceGroupName $resourceGroupName -Name $resourceNameString -ApiVersion "2018-02-01" -Force -ErrorAction Stop
-    
+        #Get the web app object
+        $webApp = Get-AzwebApp -ResourceGroupName $resourceGroupName -Name $webAppName
+        Write-host "Targeting Web APP: " $webApp.Name
         #Set the appseting to send telemetry to common applicaiton insights.
         $webAppSettings = $webApp.SiteConfig.AppSettings
         $hash = @{ }
@@ -83,7 +79,7 @@ $setWebAppConfig = {
         foreach ($setting in $webAppSettings) {
             $hash[$setting.Name] = $setting.Value
         }
-        $hash['APPINSIGHTS_INSTRUMENTATIONKEY'] = "$($appInsightsInstrumentationKey)" #its important to include the syntax around the variable eg. "$($var)"" if not supplied like this it will change the hash table's object type.
+        $hash['APPINSIGHTS_INSTRUMENTATIONKEY'] = "$appInsightsInstrumentationKey" #its important to include the syntax around the variable eg. "$($var)"" if not supplied like this it will change the hash table's object type.
         $hash['ApplicationInsightsAgent_EXTENSION_VERSION'] = "~2"
         $hash['XDT_MicrosoftApplicationInsights_Mode'] = "recommended"
         $hash['APPINSIGHTS_PROFILERFEATURE_VERSION'] = "1.0.0"
@@ -92,10 +88,20 @@ $setWebAppConfig = {
         $hash['SnapshotDebugger_EXTENSION_VERSION'] = "disabled"
         $hash['InstrumentationEngine_EXTENSION_VERSION'] = "disabled"
         $hash['XDT_MicrosoftApplicationInsights_BaseExtensions'] = "disabled"
-    
         #Write back app settings into web app
         Write-Host "Writing back updated appsettings to app service" $resourceName -ForegroundColor Green
-        Set-AzWebApp -AppSettings $hash -Name $resourceName -ResourceGroupName $resourceGroupName -verbose
+        Set-AzWebApp -AppSettings $hash -Name $resourceName -ResourceGroupName $resourceGroupName -verbose -ErrorAction stop
+        
+        #Enable Application insight extention
+        $resourceName = "$webAppName"
+        $resourceNameString = $resourceName + "/Microsoft.ApplicationInsights.AzureWebSites"
+        Write-host "Enabling Application Insights Extension on" $resourceName -ForegroundColor	DarkYellow
+        Write-host "'$resourceNameString'" #debug
+        Write-host "'$resourceGroupName'" #debug
+        New-AzResource -ResourceType "Microsoft.Web/sites/siteextensions" -ResourceGroupName $resourceGroupName -Name $resourceNameString -ApiVersion "2018-02-01" -Force -ErrorAction Stop
+        Write-host "Completed enabling app insights extention" \
+
+        #Restart Web App
         Write-host "Restarting WebApp" -ForegroundColor Green
         Write-Host $resourceName -ForegroundColor Green
         Restart-AzWebApp -ResourceGroupName $resourceGroupName -Name $resourceName   
@@ -111,7 +117,7 @@ $setWebAppConfig = {
 
 #Initiating parallel run
 ForEach ($webAppName in $webAppNames) {
-    Start-Job -ScriptBlock $setWebAppConfig -ArgumentList $resourceGroupName, $webAppName
+    Start-Job -ScriptBlock $setWebAppConfig -ArgumentList $resourceGroupName, $webAppName, $appInsightsInstrumentationKey
 }
 #logic to check that jobs completed before main scripts closes down. 
 $Timeout = new-timespan -Minutes $MaximumWaitMinutes
@@ -120,8 +126,10 @@ Write-Host "Waiting for all jobs to complete - ($($DelayBetweenCheckSeconds) sec
 while ($Stopwatch.elapsed -lt $Timeout) { 
     # Get job status
     $Status = Get-Job | Where-object { $_.State -eq "Running" }
-    Write-host "Waiting for app services configuration to complete"
+    $status
     $status.count    #to be used for debugging
+    Write-host "Waiting for app services configuration to complete"
+
     # break if all completed
     if ($status.count -eq 0) { break }
     #if (!($Status)) { break; }
